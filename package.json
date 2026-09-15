@@ -1,0 +1,16 @@
+{
+  "name": "zenquant-automation",
+  "version": "1.0.0",
+  "description": "Standalone automated settlement runner for ZenQuant",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "puppeteer": "^22.10.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
