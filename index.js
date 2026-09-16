@@ -221,7 +221,7 @@ export async function runQuantificationTask() {
     }
 
     // ----------------------------------------------------
-    // STEP 4: VERIFY STRATEGY SELECTION ("Plus")
+    // STEP 4: VERIFY PRIMARY STRATEGY SELECTION ("Plus")
     // ----------------------------------------------------
     console.log("\n⏳ [ZENQUANT STEP 4] Verifying strategy selection ('Plus')...");
     const durationTabs = await page.$$('.trade-dur');
@@ -254,9 +254,9 @@ export async function runQuantificationTask() {
     }
 
     // ----------------------------------------------------
-    // STEP 5: READ BALANCE & INJECT
+    // STEP 5: TRADE STAGE 1 - PLUS (MAX $50)
     // ----------------------------------------------------
-    console.log("\n💵 [ZENQUANT STEP 5] Reading updated Available Balance...");
+    console.log("\n💵 [ZENQUANT STEP 5] Reading Available Balance for Stage 1 (Plus)...");
     const rawBalance = await page.evaluate(() => {
       const balanceNode = document.querySelector('.trade-inject-balance__num');
       return balanceNode ? parseFloat(balanceNode.innerText.trim()) : 0;
@@ -265,10 +265,10 @@ export async function runQuantificationTask() {
     let amountToInject = Math.floor(rawBalance);
     if (amountToInject > 50) amountToInject = 50;
 
-    console.log(`📊 [ZENQUANT BALANCE REPORT] Detected Raw Balance: ${rawBalance} USD | Target Reinvestment: ${amountToInject} USD`);
+    console.log(`📊 [ZENQUANT STAGE 1 REPORT] Detected Raw Balance: ${rawBalance} USD | Target Plus Reinvestment: ${amountToInject} USD`);
 
     if (amountToInject > 0) {
-      console.log(`🚀 [ZENQUANT] Preparing to inject ${amountToInject} USD...`);
+      console.log(`🚀 [ZENQUANT STAGE 1] Injecting ${amountToInject} USD into Plus...`);
 
       const numberInputHandle = await page.$('input.uni-input-input');
 
@@ -292,7 +292,7 @@ export async function runQuantificationTask() {
 
       if (confirmHandle) {
         await safeClick(page, confirmHandle);
-        console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${amountToInject} USD!`);
+        console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${amountToInject} USD into Plus!`);
         await sendTelegram(`🤖 *ZenQuant Bot*\n⚡ Successfully reinvested *${amountToInject} USD* into 3-Hour Plus session!`);
 
         console.log("⏳ [ZENQUANT] Holding connection for 30 seconds to settle network requests...");
@@ -301,7 +301,72 @@ export async function runQuantificationTask() {
         console.error("⚠️ [ZENQUANT ERROR] Confirm Injection button ('uni-button.trade-submit') not found in DOM.");
       }
     } else {
-      console.log("⚠️ [ZENQUANT INSIGHT] Available balance is 0 USD or insufficient for new cycle injection.");
+      console.log("⚠️ [ZENQUANT INSIGHT] Available balance is 0 USD. Skipping Stage 1.");
+    }
+
+    // ----------------------------------------------------
+    // STEP 6: TRADE STAGE 2 - 3HOURS NORMAL (MIN $10)
+    // ----------------------------------------------------
+    console.log("\n💵 [ZENQUANT STEP 6] Re-checking balance for Stage 2 (3Hours Normal)...");
+    const remainingBalance = await page.evaluate(() => {
+      const balanceNode = document.querySelector('.trade-inject-balance__num');
+      return balanceNode ? parseFloat(balanceNode.innerText.trim()) : 0;
+    });
+
+    const secondaryAmount = Math.floor(remainingBalance);
+    console.log(`📊 [ZENQUANT STAGE 2 REPORT] Remaining Balance: ${remainingBalance} USD | Target 3Hours Trade: ${secondaryAmount} USD`);
+
+    if (secondaryAmount >= 10) {
+      console.log(`🚀 [ZENQUANT STAGE 2] Remaining balance >= $10. Switching strategy tab to '3Hours'...`);
+
+      const durationTabsList = await page.$$('.trade-dur');
+      let threeHoursFound = false;
+
+      for (const tab of durationTabsList) {
+        const text = await page.evaluate((el) => el.innerText.trim(), tab);
+        if (text.toUpperCase() === "3HOURS") {
+          threeHoursFound = true;
+          console.log("🎯 [ZENQUANT] '3Hours' tab located. Tapping tab...");
+          await safeClick(page, tab);
+          await new Promise((res) => setTimeout(res, 1500));
+          break;
+        }
+      }
+
+      if (threeHoursFound) {
+        const numberInputHandle = await page.$('input.uni-input-input');
+
+        if (numberInputHandle) {
+          console.log(`✍️ [ZENQUANT] Typing ${secondaryAmount} USD into 3Hours injection input...`);
+          await numberInputHandle.click({ clickCount: 3 });
+          await numberInputHandle.type(secondaryAmount.toString(), { delay: 100 });
+
+          await page.evaluate((el) => {
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }, numberInputHandle);
+        }
+
+        await new Promise((res) => setTimeout(res, 1200));
+
+        console.log("👆 [ZENQUANT] Triggering Confirm Injection button for 3Hours...");
+        const confirmHandle = await page.$('uni-button.trade-submit');
+
+        if (confirmHandle) {
+          await safeClick(page, confirmHandle);
+          console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${secondaryAmount} USD into 3Hours session!`);
+          await sendTelegram(`🤖 *ZenQuant Bot*\n⚡ Successfully reinvested *${secondaryAmount} USD* into 3-Hour Normal session!`);
+
+          console.log("⏳ [ZENQUANT] Holding connection for 30 seconds to settle network requests...");
+          await new Promise((res) => setTimeout(res, 30000));
+        } else {
+          console.error("⚠️ [ZENQUANT ERROR] Confirm Injection button ('uni-button.trade-submit') not found during 3Hours trade.");
+        }
+      } else {
+        console.error("⚠️ [ZENQUANT ERROR] '3Hours' strategy tab was not found in DOM.");
+      }
+    } else {
+      console.log(`ℹ️ [ZENQUANT INSIGHT] Remaining balance (${remainingBalance} USD) is under the $10 minimum threshold for 3Hours trade. Skipping Stage 2.`);
     }
 
   } catch (err) {
