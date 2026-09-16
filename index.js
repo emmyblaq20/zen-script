@@ -13,15 +13,20 @@ async function sendTelegram(text) {
   if (!token || !chatId || token.includes("YOUR_")) return;
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
         text,
-        parse_mode: "Markdown"
+        parse_mode: "HTML"
       })
     });
+
+    if (!res.ok) {
+      const errData = await res.json();
+      console.error("❌ [TELEGRAM API ERROR]:", errData);
+    }
   } catch (err) {
     console.error("❌ [TELEGRAM ERROR]:", err.message);
   }
@@ -152,7 +157,7 @@ export async function runQuantificationTask() {
 
     if (currentUrl.includes("login")) {
       console.error("❌ [ZENQUANT LOGIN FAILED] Still on login route after submit attempt. Aborting run.");
-      await sendTelegram("❌ *ZenQuant Bot Error:* Login failed. Credentials or submit tap rejected.");
+      await sendTelegram("❌ <b>ZenQuant Bot Error:</b> Login failed. Credentials or submit tap rejected.");
       return;
     }
 
@@ -171,28 +176,46 @@ export async function runQuantificationTask() {
     await new Promise((res) => setTimeout(res, 5000));
 
     // ----------------------------------------------------
-    // STEP 3: CLAIM SETTLEMENT & CONFIRM PROMPT
+    // STEP 3: CLAIM ALL SETTLEMENT CARDS (3Hours + Plus)
     // ----------------------------------------------------
-    console.log("\n💰 [ZENQUANT STEP 3] Checking for active settlements...");
-    const settlementHandle = await page.$('.uit-order-lists__receive-btn-text');
+    console.log("\n💰 [ZENQUANT STEP 3] Scanning for active position settlements...");
+    let claimsProcessed = 0;
 
-    if (settlementHandle) {
-      console.log("🎯 [ZENQUANT] Active Settlement button detected! Dispatching tap...");
-      await safeClick(page, settlementHandle);
+    while (true) {
+      const claimed = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('*'));
+        
+        // Find any leaf element with exact text "Claimable" or "Receive"
+        const claimBtn = allElements.find((el) => {
+          if (!el || el.offsetHeight === 0 || el.children.length > 0) return false;
+          const txt = el.innerText ? el.innerText.trim().toUpperCase() : '';
+          return txt === 'CLAIMABLE' || txt === 'RECEIVE' || el.classList.contains('uit-order-lists__receive-btn-text');
+        });
 
-      await new Promise((res) => setTimeout(res, 1500));
+        if (claimBtn) {
+          ['pointerdown', 'touchstart', 'mousedown', 'pointerup', 'touchend', 'mouseup', 'click'].forEach((evt) => {
+            claimBtn.dispatchEvent(new Event(evt, { bubbles: true, cancelable: true }));
+          });
+          return true;
+        }
+        return false;
+      });
 
-      console.log("🔍 [ZENQUANT] Locating modal confirm button (.btnConfirm)...");
+      if (!claimed) break;
+
+      claimsProcessed++;
+      console.log(`🎯 [ZENQUANT] Tapped 'Claimable' button #${claimsProcessed}...`);
+      await new Promise((res) => setTimeout(res, 2000));
+
+      // Handle Modal Confirmation (.btnConfirm)
       const confirmBtnHandle = await page.$('.btnConfirm');
 
       if (confirmBtnHandle) {
-        console.log("🎯 [ZENQUANT] Settlement modal confirm button (.btnConfirm) found! Dispatching tap...");
+        console.log(`🎯 [ZENQUANT] Settlement modal confirm button found! Tapping...`);
         await safeClick(page, confirmBtnHandle);
-        console.log("✅ [ZENQUANT SUCCESS] Tapped .btnConfirm button!");
-        await sendTelegram("🤖 *ZenQuant Bot*\n✅ Active settlement claimed & confirmed!");
+        await new Promise((res) => setTimeout(res, 2500));
       } else {
-        console.warn("⚠️ [ZENQUANT WARNING] Direct handle for .btnConfirm missed; evaluating inner tree fallback...");
-        const fallbackConfirmed = await page.evaluate(() => {
+        await page.evaluate(() => {
           const btn = document.querySelector('.btnConfirm') || 
                       Array.from(document.querySelectorAll("uni-view")).find(
                         (el) => el.classList.contains("btnConfirm") || (el.innerText && el.innerText.trim().toUpperCase() === "CONFIRM")
@@ -201,23 +224,19 @@ export async function runQuantificationTask() {
             ["pointerdown", "touchstart", "mousedown", "pointerup", "touchend", "mouseup", "click"].forEach((evt) => {
               btn.dispatchEvent(new Event(evt, { bubbles: true, cancelable: true }));
             });
-            return true;
           }
-          return false;
         });
-
-        if (fallbackConfirmed) {
-          console.log("✅ [ZENQUANT SUCCESS] Modal confirmed via inner tree fallback!");
-          await sendTelegram("🤖 *ZenQuant Bot*\n✅ Active settlement claimed & confirmed!");
-        } else {
-          console.warn("⚠️ [ZENQUANT WARNING] Settlement claim button tapped, but no confirm prompt was triggered.");
-        }
+        await new Promise((res) => setTimeout(res, 2500));
       }
+    }
 
+    if (claimsProcessed > 0) {
+      console.log(`🎉 [ZENQUANT SUCCESS] Total positions claimed: ${claimsProcessed}`);
+      await sendTelegram(`🤖 <b>ZenQuant Bot</b>\n✅ Claimed payouts from <b>${claimsProcessed}</b> open position(s)!`);
       console.log("⏳ [ZENQUANT] Waiting 5 seconds for balance refresh post-claim...");
       await new Promise((res) => setTimeout(res, 5000));
     } else {
-      console.log("ℹ️ [ZENQUANT] No active settlement ready to claim.");
+      console.log("ℹ️ [ZENQUANT] No active positions marked 'Claimable'.");
     }
 
     // ----------------------------------------------------
@@ -293,7 +312,7 @@ export async function runQuantificationTask() {
       if (confirmHandle) {
         await safeClick(page, confirmHandle);
         console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${amountToInject} USD into Plus!`);
-        await sendTelegram(`🤖 *ZenQuant Bot*\n⚡ Successfully reinvested *${amountToInject} USD* into 3-Hour Plus session!`);
+        await sendTelegram(`🤖 <b>ZenQuant Bot</b>\n⚡ Successfully reinvested <b>${amountToInject} USD</b> into 3-Hour Plus session!`);
 
         console.log("⏳ [ZENQUANT] Holding connection for 30 seconds to settle network requests...");
         await new Promise((res) => setTimeout(res, 30000));
@@ -307,7 +326,27 @@ export async function runQuantificationTask() {
     // ----------------------------------------------------
     // STEP 6: TRADE STAGE 2 - 3HOURS NORMAL (MIN $10)
     // ----------------------------------------------------
-    console.log("\n💵 [ZENQUANT STEP 6] Re-checking balance for Stage 2 (3Hours Normal)...");
+    console.log("\n💵 [ZENQUANT STEP 6] Switching strategy tab to '3Hours' for Stage 2...");
+    
+    const tabSwitched = await page.evaluate(() => {
+      const tabs = Array.from(document.querySelectorAll('.trade-dur'));
+      const threeHoursTab = tabs.find((el) => el.innerText && el.innerText.trim().toUpperCase().includes("3HOURS"));
+      
+      if (threeHoursTab) {
+        const target = threeHoursTab.querySelector('span') || threeHoursTab;
+        ["pointerdown", "touchstart", "mousedown", "pointerup", "touchend", "mouseup", "click"].forEach((evt) => {
+          target.dispatchEvent(new Event(evt, { bubbles: true, cancelable: true }));
+        });
+        return true;
+      }
+      return false;
+    });
+
+    if (tabSwitched) {
+      console.log("✅ [ZENQUANT] Tapped '3Hours' strategy tab. Waiting 3s for UI refresh...");
+      await new Promise((res) => setTimeout(res, 3000));
+    }
+
     const remainingBalance = await page.evaluate(() => {
       const balanceNode = document.querySelector('.trade-inject-balance__num');
       return balanceNode ? parseFloat(balanceNode.innerText.trim()) : 0;
@@ -317,53 +356,35 @@ export async function runQuantificationTask() {
     console.log(`📊 [ZENQUANT STAGE 2 REPORT] Remaining Balance: ${remainingBalance} USD | Target 3Hours Trade: ${secondaryAmount} USD`);
 
     if (secondaryAmount >= 10) {
-      console.log(`🚀 [ZENQUANT STAGE 2] Remaining balance >= $10. Switching strategy tab to '3Hours'...`);
+      console.log(`🚀 [ZENQUANT STAGE 2] Remaining balance >= $10. Proceeding with 3Hours reinvestment...`);
 
-      const durationTabsList = await page.$$('.trade-dur');
-      let threeHoursFound = false;
+      const numberInputHandle = await page.$('input.uni-input-input');
 
-      for (const tab of durationTabsList) {
-        const text = await page.evaluate((el) => el.innerText.trim(), tab);
-        if (text.toUpperCase() === "3HOURS") {
-          threeHoursFound = true;
-          console.log("🎯 [ZENQUANT] '3Hours' tab located. Tapping tab...");
-          await safeClick(page, tab);
-          await new Promise((res) => setTimeout(res, 1500));
-          break;
-        }
+      if (numberInputHandle) {
+        console.log(`✍️ [ZENQUANT] Typing ${secondaryAmount} USD into 3Hours injection input...`);
+        await numberInputHandle.click({ clickCount: 3 });
+        await numberInputHandle.type(secondaryAmount.toString(), { delay: 100 });
+
+        await page.evaluate((el) => {
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }, numberInputHandle);
       }
 
-      if (threeHoursFound) {
-        const numberInputHandle = await page.$('input.uni-input-input');
+      await new Promise((res) => setTimeout(res, 1200));
 
-        if (numberInputHandle) {
-          console.log(`✍️ [ZENQUANT] Typing ${secondaryAmount} USD into 3Hours injection input...`);
-          await numberInputHandle.click({ clickCount: 3 });
-          await numberInputHandle.type(secondaryAmount.toString(), { delay: 100 });
+      console.log("👆 [ZENQUANT] Triggering Confirm Injection button for 3Hours...");
+      const confirmHandle = await page.$('uni-button.trade-submit');
 
-          await page.evaluate((el) => {
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-            el.dispatchEvent(new Event("change", { bubbles: true }));
-          }, numberInputHandle);
-        }
+      if (confirmHandle) {
+        await safeClick(page, confirmHandle);
+        console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${secondaryAmount} USD into 3Hours session!`);
+        await sendTelegram(`🤖 <b>ZenQuant Bot</b>\n⚡ Successfully reinvested <b>${secondaryAmount} USD</b> into 3-Hour Normal session!`);
 
-        await new Promise((res) => setTimeout(res, 1200));
-
-        console.log("👆 [ZENQUANT] Triggering Confirm Injection button for 3Hours...");
-        const confirmHandle = await page.$('uni-button.trade-submit');
-
-        if (confirmHandle) {
-          await safeClick(page, confirmHandle);
-          console.log(`🎉 [ZENQUANT SUCCESS] Successfully injected ${secondaryAmount} USD into 3Hours session!`);
-          await sendTelegram(`🤖 *ZenQuant Bot*\n⚡ Successfully reinvested *${secondaryAmount} USD* into 3-Hour Normal session!`);
-
-          console.log("⏳ [ZENQUANT] Holding connection for 30 seconds to settle network requests...");
-          await new Promise((res) => setTimeout(res, 30000));
-        } else {
-          console.error("⚠️ [ZENQUANT ERROR] Confirm Injection button ('uni-button.trade-submit') not found during 3Hours trade.");
-        }
+        console.log("⏳ [ZENQUANT] Holding connection for 30 seconds to settle network requests...");
+        await new Promise((res) => setTimeout(res, 30000));
       } else {
-        console.error("⚠️ [ZENQUANT ERROR] '3Hours' strategy tab was not found in DOM.");
+        console.error("⚠️ [ZENQUANT ERROR] Confirm Injection button ('uni-button.trade-submit') not found during 3Hours trade.");
       }
     } else {
       console.log(`ℹ️ [ZENQUANT INSIGHT] Remaining balance (${remainingBalance} USD) is under the $10 minimum threshold for 3Hours trade. Skipping Stage 2.`);
@@ -371,7 +392,7 @@ export async function runQuantificationTask() {
 
   } catch (err) {
     console.error("\n❌ [ZENQUANT TASK CRITICAL ERROR]:", err.message);
-    await sendTelegram(`❌ *ZenQuant Bot Error:* ${err.message}`);
+    await sendTelegram(`❌ <b>ZenQuant Bot Error:</b> ${err.message}`);
   } finally {
     if (browser) {
       await browser.disconnect();
