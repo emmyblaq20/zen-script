@@ -7,7 +7,7 @@ const THREE_HOURS_TWO_MINS_MS = (3 * 60 + 2) * 60 * 1000;
 let isQuantRunning = false;
 let lastQuantRunTime = Date.now();
 
-// Universal Telegram Notification Helper
+// Telegram Bot Notification Dispatcher
 async function sendTelegram(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -131,12 +131,15 @@ export async function runQuantificationTask() {
   const BASE_URL = "https://zenquantai.com";
 
   if (!ZEN_PHONE || !ZEN_PASSWORD || !STEEL_API_KEY) {
-    console.error("❌ [ZENQUANT ERROR] Missing required environment variables.");
+    console.error("❌ [ZENQUANT ERROR] Missing required environment variables: ZENQUANT_PHONE, ZENQUANT_PASSWORD, or STEEL_API_KEY.");
     return;
   }
 
   try {
+    console.log("\n==================================================");
     console.log("🤖 [ZENQUANT] Connecting to Steel.dev remote browser...");
+    console.log("==================================================");
+
     browser = await puppeteer.connect({
       browserWSEndpoint: `wss://connect.steel.dev?apiKey=${STEEL_API_KEY}`
     });
@@ -145,14 +148,17 @@ export async function runQuantificationTask() {
     await page.setViewport({ width: 1280, height: 800 });
 
     // ----------------------------------------------------
-    // STEP 1: AUTHENTICATION
+    // STEP 1: LOGIN PROCEDURE
     // ----------------------------------------------------
     console.log("🔑 [STEP 1] Navigating to Login Page...");
     await page.goto(`${BASE_URL}/#/pages/login/login`, { waitUntil: "domcontentloaded", timeout: 45000 });
+    
+    console.log("⏳ Waiting for input elements to mount...");
     await page.waitForSelector("input.uni-input-input", { timeout: 30000 });
     await new Promise((res) => setTimeout(res, 2500));
 
-    // Country Prefix
+    // Select Country Prefix (+234 Nigeria)
+    console.log("🌍 Selecting country prefix (+234)...");
     await page.evaluate(() => {
       const countryRows = Array.from(document.querySelectorAll(".country-list-row"));
       const nigeriaRow = countryRows.find((el) => el.innerText && (el.innerText.includes("Nigeria") || el.innerText.includes("+234")));
@@ -160,25 +166,63 @@ export async function runQuantificationTask() {
     });
     await new Promise((res) => setTimeout(res, 800));
 
-    // Credentials Input
+    // Fill Phone & Password
+    console.log("✍️ Entering credentials...");
     const phoneInput = await page.$('input.uni-input-input[type="number"]');
     const passInput = await page.$('input.uni-input-input[type="password"]');
 
     if (phoneInput && passInput) {
       await phoneInput.click({ clickCount: 3 });
       await phoneInput.type(ZEN_PHONE, { delay: 50 });
+      await page.evaluate((el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, phoneInput);
+
+      await new Promise((res) => setTimeout(res, 500));
+
       await passInput.click({ clickCount: 3 });
       await passInput.type(ZEN_PASSWORD, { delay: 50 });
+      await page.evaluate((el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, passInput);
+    } else {
+      throw new Error("Login inputs not found in DOM.");
     }
 
+    await new Promise((res) => setTimeout(res, 1000));
+
+    // Submit Login Form
+    console.log("👆 Submitting Login CTA (.zq-cta)...");
     const loginCta = await page.$('.zq-cta');
-    if (loginCta) await safeClick(page, loginCta);
+    if (loginCta) {
+      await safeClick(page, loginCta);
+    } else {
+      const fallbackBtn = await page.evaluateHandle(() => {
+        return Array.from(document.querySelectorAll("uni-view, uni-button, button")).find(
+          (el) => el.innerText && el.innerText.trim().toUpperCase() === "LOGIN"
+        );
+      });
+      const el = await fallbackBtn.asElement();
+      if (el) await safeClick(page, el);
+    }
+
+    console.log("⏳ Waiting 7 seconds for authentication response...");
     await new Promise((res) => setTimeout(res, 7000));
+
+    // Verification
+    if (page.url().includes("login")) {
+      console.error("❌ Login failed. Still on login route.");
+      await sendTelegram("❌ <b>ZenQuant Bot Error:</b> Login failed. Verify credentials.");
+      return;
+    }
+    console.log("✅ Login successful!");
 
     // ----------------------------------------------------
     // STEP 2: TRADE ROUTE NAVIGATION
     // ----------------------------------------------------
-    console.log("📈 [STEP 2] Navigating to Trade Page...");
+    console.log("\n📈 [STEP 2] Navigating to Trade Page...");
     await page.goto(`${BASE_URL}/#/pages/UITransaction/trade`, { waitUntil: "domcontentloaded" });
     console.log("⏳ Waiting 5 seconds after page load...");
     await new Promise((res) => setTimeout(res, 5000));
@@ -186,11 +230,11 @@ export async function runQuantificationTask() {
     // ----------------------------------------------------
     // STEP 3: CLAIM CHECK #1 (Top Open Positions)
     // ----------------------------------------------------
-    console.log("💰 [STEP 3] Checking Top Open Positions Claimable button (.trade-pos__claim)...");
+    console.log("\n💰 [STEP 3] Checking Top Open Positions Claimable button (.trade-pos__claim)...");
     const topClaimHandle = await page.$('.trade-pos__claim');
 
     if (topClaimHandle) {
-      console.log("🎯 [ZENQUANT] Found Top Claim button. Dispatching tap...");
+      console.log("🎯 Found Top Claim button. Dispatching tap...");
       await safeClick(page, topClaimHandle);
       await handleModalConfirm(page);
 
@@ -205,12 +249,12 @@ export async function runQuantificationTask() {
     // ----------------------------------------------------
     // STEP 4: CLAIM CHECK #2 (Bottom Active Orders Settlement)
     // ----------------------------------------------------
-    console.log("💰 [STEP 4] Checking Bottom Settlement button (.uit-order-lists__receive-btn)...");
+    console.log("\n💰 [STEP 4] Checking Bottom Settlement button (.uit-order-lists__receive-btn)...");
     const bottomSettlementHandle = await page.$('.uit-order-lists__receive-btn') || 
                                    await page.$('.uit-order-lists__receive-btn-text');
 
     if (bottomSettlementHandle) {
-      console.log("🎯 [ZENQUANT] Found Bottom Settlement button. Dispatching tap...");
+      console.log("🎯 Found Bottom Settlement button. Dispatching tap...");
       await safeClick(page, bottomSettlementHandle);
       await handleModalConfirm(page);
 
@@ -232,7 +276,7 @@ export async function runQuantificationTask() {
     let remainingBalance = usableBalance - plusAmount;
     let normalAmount = remainingBalance >= 10 ? remainingBalance : 0;
 
-    console.log(`📊 [CALCULATION SUMMARY] Raw Balance: ${initialRawBalance} USD | Plus Target: ${plusAmount} USD | Normal Target: ${normalAmount} USD`);
+    console.log(`\n📊 [CALCULATION SUMMARY] Raw Balance: ${initialRawBalance} USD | Plus Target: ${plusAmount} USD | Normal Target: ${normalAmount} USD`);
 
     let executedPlus = 0;
     let executedNormal = 0;
@@ -241,7 +285,7 @@ export async function runQuantificationTask() {
     // STEP 6: EXECUTE TRADE 1 (3Hours Plus)
     // ----------------------------------------------------
     if (plusAmount > 0) {
-      console.log(`🚀 [EXECUTION] Processing 3Hours Plus Trade (${plusAmount} USD)...`);
+      console.log(`\n🚀 [EXECUTION] Processing 3Hours Plus Trade (${plusAmount} USD)...`);
       await selectStrategyTab(page, "PLUS");
 
       const plusSuccess = await injectAmountAndSubmit(page, plusAmount);
@@ -262,7 +306,7 @@ export async function runQuantificationTask() {
     // STEP 7: EXECUTE TRADE 2 (3Hours Normal)
     // ----------------------------------------------------
     if (normalAmount >= 10) {
-      console.log(`🚀 [EXECUTION] Processing 3Hours Normal Trade (${normalAmount} USD)...`);
+      console.log(`\n🚀 [EXECUTION] Processing 3Hours Normal Trade (${normalAmount} USD)...`);
       await selectStrategyTab(page, "3HOURS");
 
       const normalSuccess = await injectAmountAndSubmit(page, normalAmount);
@@ -286,7 +330,7 @@ export async function runQuantificationTask() {
     const expectedUnusedBalance = initialRawBalance - (executedPlus + executedNormal);
     const isMathValid = Math.abs(finalBalance - expectedUnusedBalance) < 0.1;
 
-    console.log(`📊 [FINAL VERIFICATION] Ending Balance: ${finalBalance} USD | Expected Unused: ${expectedUnusedBalance.toFixed(2)} USD | Valid: ${isMathValid}`);
+    console.log(`\n📊 [FINAL VERIFICATION] Ending Balance: ${finalBalance} USD | Expected Unused: ${expectedUnusedBalance.toFixed(2)} USD | Valid: ${isMathValid}`);
 
     let reportMsg = `🤖 <b>ZenQuant Automated Execution Report</b>\n\n`;
     reportMsg += `💰 <b>Initial Balance:</b> ${initialRawBalance.toFixed(2)} USD\n`;
@@ -326,7 +370,7 @@ async function executeTrigger(source = "SCHEDULED") {
   }
 }
 
-// Keep-alive and HTTP Webhook Server
+// Webhook HTTP Server
 http.createServer((req, res) => {
   if ((req.url || "/").startsWith("/run-quant")) {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -340,7 +384,7 @@ http.createServer((req, res) => {
   console.log(`Server listening on port ${PORT}`);
 });
 
-// Automated 3-Hour Interval Runner
+// Automated 3-Hour Interval Runner with Self-Ping Keep-Alive
 setInterval(async () => {
   const APP_URL = process.env.RENDER_EXTERNAL_URL;
   if (APP_URL) {
@@ -351,5 +395,5 @@ setInterval(async () => {
   }
 }, 10 * 60 * 1000);
 
-// Boot Execution
+// Boot Trigger
 executeTrigger("INITIAL_BOOT");
